@@ -12,8 +12,8 @@ Results are exported to a CSV file.
 - Requires Microsoft Graph PowerShell SDK
 - Requires Device.ReadWrite.All permissions
 - Export folder is configurable via $ExportFolder
-- `$IncludeEnabled = $true` to include enabled devices
-- `$IncludeDisabled = $true` to include disabled devices
+- `$IncludeEnabled = $true` to include enabled devices; `$false` excludes enabled devices completely from results
+- `$IncludeDisabled = $true` to include disabled devices; `$false` excludes disabled devices completely from results
 - `$UseWhatIf = $true` to simulate deletions; `$false` to perform actual deletion
 - Correctly formats $DaysBack as ISO 8601 datetime for Graph filtering
 
