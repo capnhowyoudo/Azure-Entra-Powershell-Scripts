@@ -1,94 +1,100 @@
 <#
 .SYNOPSIS
-Identifies Microsoft Entra ID devices that are stale based on last sign-in (using the configurable $DaysBack variable, default 90 days) and optionally deletes them, exporting a detailed report.
+Identifies Microsoft Entra ID devices that are stale based on last sign-in (Default 90 days) and optionally deletes them, with flexible inclusion/exclusion of enabled or disabled devices.
 
 .DESCRIPTION
-This script connects to Microsoft Graph with Device.ReadWrite.All permissions, calculates a date threshold
-(based on $DaysBack), and retrieves devices whose ApproximateLastSignInDateTime is older than that threshold
-and match the target enabled/disabled status. 
-
-For enabled devices, it demonstrates how to safely delete them using the configurable $UseWhatIf variable. Disabled devices are reported for auditing.
-The results, including action notes, are exported to a CSV file in a configurable folder.
+Connects to Microsoft Graph, calculates a date threshold based on $DaysBack, and retrieves devices whose ApproximateLastSignInDateTime is older than that threshold.
+Devices can be filtered to include enabled devices, disabled devices, or both using the $IncludeEnabled and $IncludeDisabled variables.
+Enabled devices can be deleted (simulated or actual), while disabled devices are reported for auditing.
+Results are exported to a CSV file.
 
 .NOTES
 - Requires Microsoft Graph PowerShell SDK
 - Requires Device.ReadWrite.All permissions
-- Export folder is configurable via $ExportFolder (default: C:\Temp)
-- Export filename includes device status and date for tracking
-- Uses server-side filtering for efficiency
-- ApproximateLastSignInDateTime is updated periodically and may not reflect real-time activity
-- To locate **disabled devices**, set `$TargetEnabledStatus = $false`
-- To perform actual deletion of devices, set `$UseWhatIf = $false`
-
+- Export folder is configurable via $ExportFolder
+- `$IncludeEnabled = $true` to include enabled devices
+- `$IncludeDisabled = $true` to include disabled devices
+- `$UseWhatIf = $true` to simulate deletions; `$false` to perform actual deletion
+- Correctly formats $DaysBack as ISO 8601 datetime for Graph filtering
 
 .WARNINGS
-- Script uses $UseWhatIf for safety; set to `$false` only after validating results
-- Deleting devices is destructive—verify before applying in production
-- ApproximateLastSignInDateTime is not precise for audit/compliance
+- Deleting devices is destructive; always verify with -WhatIf first
+- ApproximateLastSignInDateTime may not be real-time accurate
 - Ensure ExportFolder exists or script will create it
-- Review exported CSV before performing bulk changes
+- Review CSV before taking action
 #>
 
-# 1. Connect with necessary permissions
+# 1. Connect
 Connect-MgGraph -Scopes "Device.ReadWrite.All"
 
 # --- CONFIGURATION ---
-$TargetEnabledStatus = $true  # $true to find Enabled devices | $false to find Disabled devices
-$DaysBack = -90
+$DaysBack = 90                 # Number of days back to consider a device stale
+$IncludeEnabled = $true        # Include enabled devices
+$IncludeDisabled = $true       # Include disabled devices
 $ExportFolder = "C:\Temp"
-$UseWhatIf = $true             # $true = simulate deletion; $false = perform actual deletion
+$UseWhatIf = $true             # $true = simulate deletion | $false = perform actual deletion
 # ---------------------
 
-# 2. Date calculation formatted for Graph Filter
-$dt = (Get-Date).AddDays($DaysBack).ToString("yyyy-MM-ddTHH:mm:ssZ")
+# 2. Calculate threshold date in ISO 8601 format (DO NOT use quotes)
+$dt = (Get-Date).AddDays(-$DaysBack).ToString("yyyy-MM-ddTHH:mm:ssZ")
 
-# 3. Get devices with dynamic filter based on your choice
-$StatusFilter = $TargetEnabledStatus.ToString().ToLower()
+# 3. Build dynamic Graph filter
+$filterParts = @("approximateLastSignInDateTime le $dt")
 
-$Devices = Get-MgDevice -All -Filter "approximateLastSignInDateTime le $dt and accountEnabled eq $StatusFilter" `
-  -Property "id","deviceId","displayName","operatingSystem","approximateLastSignInDateTime","accountEnabled"
+if ($IncludeEnabled -and -not $IncludeDisabled) { $filterParts += "accountEnabled eq true" }
+elseif (-not $IncludeEnabled -and $IncludeDisabled) { $filterParts += "accountEnabled eq false" }
+# If both $IncludeEnabled and $IncludeDisabled are $true, include all devices
+# If both are $false, no devices will be returned
+
+$FilterString = $filterParts -join " and "
+
+# 4. Get devices
+$Devices = Get-MgDevice -All -Filter $FilterString `
+    -Property "id","deviceId","displayName","operatingSystem","approximateLastSignInDateTime","accountEnabled"
 
 $Results = foreach ($Device in $Devices) {
-  try {
-      # 4. Action
-      if ($TargetEnabledStatus -eq $true) {
-          # Deleting an enabled stale device, controlled by $UseWhatIf
-          if ($UseWhatIf) {
-              Remove-MgDevice -DeviceId $Device.Id -WhatIf
-              $ActionNote = "WhatIf: Device would be DELETED"
-          } else {
-              Remove-MgDevice -DeviceId $Device.Id
-              $ActionNote = "Device DELETED"
-          }
-      } else {
-          # Reporting on already disabled devices
-          $ActionNote = "Audit: Device is already disabled"
-      }
+    try {
+        # 5. Action
+        if ($Device.AccountEnabled -and $IncludeEnabled) {
+            if ($UseWhatIf) {
+                Remove-MgDevice -DeviceId $Device.Id -WhatIf
+                $ActionNote = "WhatIf: Device would be DELETED"
+            } else {
+                Remove-MgDevice -DeviceId $Device.Id
+                $ActionNote = "Device DELETED"
+            }
+        } elseif (-not $Device.AccountEnabled -and $IncludeDisabled) {
+            $ActionNote = "Audit: Device is already disabled"
+        } else {
+            $ActionNote = "Excluded by configuration"
+        }
 
-      [PSCustomObject]@{
-          DisplayName                   = $Device.DisplayName
-          DeviceId                      = $Device.DeviceId
-          Id                            = $Device.Id
-          OperatingSystem               = $Device.OperatingSystem
-          ApproximateLastSignInDateTime = $Device.ApproximateLastSignInDateTime
-          AccountEnabled                = $Device.AccountEnabled
-          Action                        = $ActionNote
-      }
-  }
-  catch {
-      Write-Host "Failed to process: $($Device.DisplayName) - $($_.Exception.Message)" -ForegroundColor Red
-  }
+        [PSCustomObject]@{
+            DisplayName                   = $Device.DisplayName
+            DeviceId                      = $Device.DeviceId
+            Id                            = $Device.Id
+            OperatingSystem               = $Device.OperatingSystem
+            ApproximateLastSignInDateTime = $Device.ApproximateLastSignInDateTime
+            AccountEnabled                = $Device.AccountEnabled
+            Action                        = $ActionNote
+        }
+    }
+    catch {
+        Write-Host "Failed to process: $($Device.DisplayName) - $($_.Exception.Message)" -ForegroundColor Red
+    }
 }
 
-# 5. Export results
+# 6. Export results
 if ($Results) {
-  if (!(Test-Path $ExportFolder)) { New-Item -ItemType Directory -Path $ExportFolder }
-  
-  $StatusText = if ($TargetEnabledStatus) { "enabled" } else { "disabled" }
-  $FileName = "$ExportFolder\stale-$StatusText-devices-$(Get-Date -Format 'yyyyMMdd').csv"
-  
-  $Results | Export-Csv -Path $FileName -NoTypeInformation
-  Write-Host "Process complete. $($Results.Count) $StatusText devices identified in $FileName" -ForegroundColor Green
+    if (!(Test-Path $ExportFolder)) { New-Item -ItemType Directory -Path $ExportFolder }
+    
+    $StatusText = if ($IncludeEnabled -and -not $IncludeDisabled) { "enabled" } `
+                  elseif (-not $IncludeEnabled -and $IncludeDisabled) { "disabled" } `
+                  else { "all" }
+    $FileName = "$ExportFolder\stale-$StatusText-devices-$(Get-Date -Format 'yyyyMMdd').csv"
+    
+    $Results | Export-Csv -Path $FileName -NoTypeInformation
+    Write-Host "Process complete. $($Results.Count) $StatusText devices identified in $FileName" -ForegroundColor Green
 } else {
-  Write-Host "No devices found matching the stale criteria for status: $TargetEnabledStatus" -ForegroundColor Yellow
+    Write-Host "No devices found matching the stale criteria for current configuration" -ForegroundColor Yellow
 }
