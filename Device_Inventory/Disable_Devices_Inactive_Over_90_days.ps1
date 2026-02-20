@@ -7,7 +7,7 @@ This script connects to Microsoft Graph with Device.ReadWrite.All permissions, c
 (based on $DaysBack), and retrieves devices whose ApproximateLastSignInDateTime is older than that threshold
 and match the target enabled/disabled status. 
 
-For enabled devices, it demonstrates how to safely disable them using `-WhatIf`. Disabled devices are reported for auditing.
+Enabled devices can be disabled automatically based on the $UseWhatIf variable (simulated vs actual action). Disabled devices are reported for auditing.
 The results, including action notes, are exported to a CSV file in a configurable folder.
 
 .NOTES
@@ -18,9 +18,11 @@ The results, including action notes, are exported to a CSV file in a configurabl
 - Uses server-side filtering for efficiency
 - ApproximateLastSignInDateTime is updated periodically and may not reflect real-time activity
 - To locate **disabled devices**, set `$TargetEnabledStatus = $false`
+- To simulate disabling without making changes, set `$UseWhatIf = $true`
+- To actually disable devices, set `$UseWhatIf = $false`
 
 .WARNINGS
-- Script uses -WhatIf for safety; remove -WhatIf only after validating results
+- Script uses $UseWhatIf for safety; set to `$false` only after validating results
 - Disabling devices impacts end users—verify before applying in production
 - ApproximateLastSignInDateTime is not precise for audit/compliance
 - Ensure ExportFolder exists or script will create it
@@ -34,13 +36,13 @@ Connect-MgGraph -Scopes "Device.ReadWrite.All"
 $TargetEnabledStatus = $true  # SET TO: $true to find Enabled devices | $false to find Disabled devices
 $DaysBack = -90
 $ExportFolder = "C:\Temp"
+$UseWhatIf = $true             # $true = simulate action; $false = perform actual action
 # ---------------------
 
 # 2. Date calculation formatted for Graph Filter
 $dt = (Get-Date).AddDays($DaysBack).ToString("yyyy-MM-ddTHH:mm:ssZ")
 
 # 3. Get devices with dynamic filter based on your choice
-# We convert the boolean to a lowercase string for the OData filter
 $StatusFilter = $TargetEnabledStatus.ToString().ToLower()
 
 $Devices = Get-MgDevice -All -Filter "approximateLastSignInDateTime le $dt and accountEnabled eq $StatusFilter" `
@@ -48,15 +50,17 @@ $Devices = Get-MgDevice -All -Filter "approximateLastSignInDateTime le $dt and a
 
 $Results = foreach ($Device in $Devices) {
     try {
-        # 4. Action (Using -WhatIf for safety)
-        # If targeting ENABLED devices, you likely want to Disable or Delete.
-        # If targeting DISABLED devices, you might just be auditing or re-enabling.
+        # 4. Action (controlled by $UseWhatIf)
         if ($TargetEnabledStatus -eq $true) {
-            # Example: Disabling an enabled stale device
-            Update-MgDevice -DeviceId $Device.Id -AccountEnabled:$false -WhatIf
-            $ActionNote = "WhatIf: Device would be DISABLED"
+            if ($UseWhatIf) {
+                Update-MgDevice -DeviceId $Device.Id -AccountEnabled:$false -WhatIf
+                $ActionNote = "WhatIf: Device would be DISABLED"
+            } else {
+                Update-MgDevice -DeviceId $Device.Id -AccountEnabled:$false
+                $ActionNote = "Device DISABLED"
+            }
         } else {
-            # Example: Just reporting on already disabled devices
+            # Just reporting on already disabled devices
             $ActionNote = "Audit: Device is already disabled"
         }
 
